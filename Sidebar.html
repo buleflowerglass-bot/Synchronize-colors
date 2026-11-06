@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 13px; padding: 12px; }
+    label { display: block; margin-top: 10px; font-weight: bold; }
+    input[type=text], input[type=number], select {
+      width: 100%; box-sizing: border-box; padding: 6px; margin-top: 4px;
+    }
+    .row { margin-top: 10px; }
+    button { margin-top: 14px; width: 100%; padding: 9px; background: #1a73e8;
+             color: #fff; border: 0; border-radius: 4px; cursor: pointer; font-size: 14px; }
+    button:disabled { background: #9bbcf0; cursor: default; }
+    #detectBtn { background: #5f6368; }
+    #result { margin-top: 12px; white-space: pre-wrap; color: #333; }
+    .hint { color: #777; font-size: 11px; margin-top: 3px; }
+    hr { margin: 16px 0 4px; border: 0; border-top: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <label>谷歌文档链接或 ID</label>
+  <input type="text" id="docId" placeholder="https://docs.google.com/document/d/...">
+
+  <label>文档表格中英文所在列</label>
+  <input type="number" id="docColumn" min="1" placeholder="2">
+  <div class="hint">从左数第几列。中文 | 英文 | 塞语 → 填 2</div>
+
+  <label>颜色类型</label>
+  <select id="mode">
+    <option value="background">高亮颜色（背景）</option>
+    <option value="text">文字颜色</option>
+  </select>
+
+  <button type="button" id="detectBtn" onclick="detect()">检测英文列里的颜色</button>
+  <div id="colorList" style="margin-top:8px"></div>
+
+  <label>忽略的颜色（可选）</label>
+  <input type="text" id="ignoreColors" placeholder="#cccccc,#d9d9d9">
+  <div class="hint">多个颜色用英文逗号分隔</div>
+
+  <hr>
+
+  <label>作用工作表（标签）</label>
+  <select id="sheetName"></select>
+  <div class="hint">“当前工作表”= 点击同步时正在查看的标签</div>
+
+  <label>作用列（表格中的英文列）</label>
+  <input type="text" id="column" maxlength="3" placeholder="例如 E">
+
+  <label>起始行</label>
+  <input type="number" id="startRow" min="1">
+
+  <div class="row">
+    <label style="font-weight:normal">
+      <input type="checkbox" id="clearUnmatched"> 文档中无颜色的单元格清除底色
+    </label>
+  </div>
+
+  <button id="btn" onclick="run()">保存并同步</button>
+  <div id="result"></div>
+
+  <script>
+    google.script.run.withSuccessHandler(init).getInitData();
+
+    function init(data) {
+      const s = data.settings;
+      const sel = document.getElementById('sheetName');
+      sel.innerHTML = '';
+      const cur = document.createElement('option');
+      cur.value = ''; cur.textContent = '（当前工作表）';
+      sel.appendChild(cur);
+      data.sheets.forEach(n => {
+        const o = document.createElement('option');
+        o.value = n; o.textContent = n;
+        sel.appendChild(o);
+      });
+      document.getElementById('docId').value = s.docId;
+      document.getElementById('docColumn').value = s.docColumn;
+      sel.value = data.sheets.indexOf(s.sheetName) >= 0 ? s.sheetName : '';
+      document.getElementById('column').value = s.column;
+      document.getElementById('startRow').value = s.startRow;
+      document.getElementById('mode').value = s.mode;
+      document.getElementById('ignoreColors').value = s.ignoreColors;
+      document.getElementById('clearUnmatched').checked = !!s.clearUnmatched;
+    }
+
+    function detect() {
+      const box = document.getElementById('colorList');
+      const btn = document.getElementById('detectBtn');
+      box.textContent = '检测中…';
+      btn.disabled = true;
+      google.script.run
+        .withSuccessHandler(list => {
+          btn.disabled = false;
+          if (!list.length) { box.textContent = '英文列里没有检测到颜色。'; return; }
+          box.textContent = '';
+          list.forEach(o => {
+            const row = document.createElement('div');
+            const swatch = document.createElement('span');
+            swatch.style.cssText = 'display:inline-block;width:14px;height:14px;border:1px solid #999;vertical-align:middle';
+            // Google Docs normally returns a hex color. Validate it before using it as CSS.
+            if (/^#[0-9a-f]{6}$/i.test(o.color)) swatch.style.backgroundColor = o.color;
+            row.appendChild(swatch);
+            row.appendChild(document.createTextNode(' ' + o.color + '（' + o.count + ' 字）'));
+            box.appendChild(row);
+          });
+          const hint = document.createElement('div');
+          hint.className = 'hint';
+          hint.textContent = '不想同步的颜色（如灰色）请复制到“忽略的颜色”。';
+          box.appendChild(hint);
+        })
+        .withFailureHandler(err => { btn.disabled = false; box.textContent = '出错：' + err.message; })
+        .detectColors(
+          document.getElementById('docId').value.trim(),
+          document.getElementById('docColumn').value,
+          document.getElementById('mode').value
+        );
+    }
+
+    function run() {
+      const btn = document.getElementById('btn');
+      const out = document.getElementById('result');
+      const s = {
+        docId: document.getElementById('docId').value.trim(),
+        docColumn: document.getElementById('docColumn').value,
+        sheetName: document.getElementById('sheetName').value,
+        column: document.getElementById('column').value.trim(),
+        startRow: document.getElementById('startRow').value,
+        mode: document.getElementById('mode').value,
+        ignoreColors: document.getElementById('ignoreColors').value,
+        clearUnmatched: document.getElementById('clearUnmatched').checked,
+        maxSkip: 5000
+      };
+      btn.disabled = true;
+      out.textContent = '处理中，请稍候…';
+      google.script.run
+        .withSuccessHandler(msg => { out.textContent = msg; btn.disabled = false; })
+        .withFailureHandler(err => { out.textContent = '出错：' + err.message; btn.disabled = false; })
+        .saveAndSync(s);
+    }
+  </script>
+</body>
+</html>
