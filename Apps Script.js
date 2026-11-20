@@ -2,13 +2,18 @@ const PROP_KEY = 'DOC_COLOR_SYNC_SETTINGS';
 
 const DEFAULTS = {
   docId: '',
-  docColumn: 2,           // 文档表格中英文所在的列（从左数第几列）
-  sheetName: '',          // 空 = 当前工作表
-  column: 'E',            // 表格中英文所在列
+  docColumn: 2,            // 文档表格中英文所在的列（从左数第几列）
+  sheetName: '',           // 空 = 当前工作表
+  column: 'E',             // 表格中英文所在列
   startRow: 2,
-  mode: 'background',     // background = 高亮色；text = 文字颜色
-  ignoreColors: '',       // 逗号分隔，如 #cccccc,#d9d9d9
-  clearUnmatched: false,
+  mode: 'background',      // background = 高亮色；text = 文字颜色
+  ignoreColors: '',        // 逗号分隔，如 #cccccc,#d9d9d9
+  cellBg: true,            // 整格填充底色
+  clearUnmatched: false,   // 无颜色的单元格清除底色（仅在整格底色开启时有效）
+  markItalic: true,        // 高亮文字改斜体
+  markUnderline: false,    // 高亮文字加下划线
+  markTextColor: false,    // 高亮文字改成对应颜色
+  clearOldMarks: false,    // 同步前清除已匹配单元格里的斜体/下划线
   maxSkip: 5000
 };
 
@@ -52,7 +57,6 @@ function runWithSavedSettings() {
   SpreadsheetApp.getUi().alert(msg);
 }
 
-// 侧边栏点击“同步”时调用：先保存再执行，返回结果文字
 function saveAndSync(s) {
   saveSettings(s);
   return syncColors(s);
@@ -84,11 +88,15 @@ function syncColors(cfg) {
   const col = sheet.getRange(colLetter + '1').getColumn();
   const startRow = Number(cfg.startRow) || 1;
 
+  if (!cfg.cellBg && !cfg.markItalic && !cfg.markUnderline && !cfg.markTextColor && !cfg.clearOldMarks) {
+    return '请至少勾选一种标记方式。';
+  }
+
   let doc;
   try {
     doc = DocumentApp.openById(docId);
   } catch (e) {
-    return '无法打开文档，请检查链接/ID 和访问权限。';
+    return '无法打开文档：' + e.message;
   }
 
   const ignore = String(cfg.ignoreColors || '')
@@ -105,41 +113,113 @@ function syncColors(cfg) {
 
   const range = sheet.getRange(startRow, col, numRows, 1);
   const values = range.getValues();
+  const formulas = range.getFormulas();
   const bgs = range.getBackgrounds();
+  const rich = range.getRichTextValues();
+  const newRich = rich.map(r => r[0]);
+  const changed = new Array(numRows).fill(false);
 
-  let pointer = 0, colored = 0;
-  const unmatched = [];
+  const doRich = cfg.markItalic || cfg.markUnderline || cfg.markTextColor || cfg.clearOldMarks;
   const maxSkip = Number(cfg.maxSkip) || 5000;
 
-  for (let i = 0; i < values.length; i++) {
-    const norm = normalize_(String(values[i][0]));
+  let pointer = 0, bgCount = 0, markedCells = 0;
+  const unmatched = [];
+
+  for (let i = 0; i < numRows; i++) {
+    const { norm, map } = normalizeWithMap_(String(values[i][0]));
     if (!norm) continue;
 
-    const pos = findFrom_(docStr, norm, pointer, maxSkip);
-    if (pos < 0) { unmatched.push(startRow + i); continue; }
-    pointer = pos + norm.length;
+    const m = findFrom_(docStr, norm, pointer, maxSkip);
+    if (!m) { unmatched.push(startRow + i); continue; }
+    pointer = m.pos + m.len;
 
-    // 统计该范围内字数最多的颜色
-    const count = {};
-    for (let k = pos; k < pos + norm.length; k++) {
-      const c = docColors[k];
-      if (c) count[c] = (count[c] || 0) + 1;
+    // 1) 整格底色：取该单元格范围内字数最多的颜色
+    if (cfg.cellBg) {
+      const count = {};
+      for (let k = m.pos; k < m.pos + m.len; k++) {
+        const c = docColors[k];
+        if (c) count[c] = (count[c] || 0) + 1;
+      }
+      let best = null, bestN = 0;
+      for (const c in count) if (count[c] > bestN) { best = c; bestN = count[c]; }
+      if (best) { bgs[i][0] = best; bgCount++; }
+      else if (cfg.clearUnmatched) { bgs[i][0] = '#ffffff'; }
     }
-    let best = null, bestN = 0;
-    for (const c in count) if (count[c] > bestN) { best = c; bestN = count[c]; }
 
-    if (best) { bgs[i][0] = best; colored++; }
-    else if (cfg.clearUnmatched) { bgs[i][0] = '#ffffff'; }
+    // 2) 精确标记高亮的那几个词（斜体/下划线/文字色）
+    if (doRich && !formulas[i][0]) {
+      const marks = [];
+      let k = 0;
+      while (k < m.len) {
+        const c = docColors[m.pos + k];
+        if (!c) { k++; continue; }
+        let j = k;
+        while (j + 1 < m.len && docColors[m.pos + j + 1] === c) j++;
+        marks.push({ s: map[k], e: map[j] + 1, color: c });
+        k = j + 1;
+      }
+      if (marks.length || cfg.clearOldMarks) {
+        newRich[i] = applyMarks_(rich[i][0], marks, cfg);
+        changed[i] = true;
+        if (marks.length) markedCells++;
+      }
+    }
   }
 
-  range.setBackgrounds(bgs);
+  if (cfg.cellBg) range.setBackgrounds(bgs);
 
-  let msg = '完成：工作表「' + sheet.getName() + '」' + colLetter + ' 列，已标色 ' + colored + ' 个单元格。';
+  // 只把有改动的连续区块写回，避免影响其他单元格
+  let i = 0;
+  while (i < numRows) {
+    if (!changed[i]) { i++; continue; }
+    let j = i;
+    while (j + 1 < numRows && changed[j + 1]) j++;
+    sheet.getRange(startRow + i, col, j - i + 1, 1)
+      .setRichTextValues(newRich.slice(i, j + 1).map(v => [v]));
+    i = j + 1;
+  }
+
+  let msg = '完成：工作表「' + sheet.getName() + '」' + colLetter + ' 列。';
+  if (cfg.cellBg) msg += '\n整格标色：' + bgCount + ' 个单元格。';
+  if (doRich) msg += '\n文字标记：' + markedCells + ' 个单元格含高亮文字。';
   if (unmatched.length) {
     msg += '\n未能匹配的行（共 ' + unmatched.length + ' 个）：' +
       unmatched.slice(0, 30).join(', ') + (unmatched.length > 30 ? ' ...' : '');
   }
   return msg;
+}
+
+/***** 富文本标记 *****/
+// 在保留原有格式（如加粗）的基础上，给 marks 指定的范围叠加斜体/下划线/文字色
+function applyMarks_(rv, marks, cfg) {
+  let base = rv;
+
+  if (cfg.clearOldMarks) {
+    const b = rv.copy();
+    rv.getRuns().forEach(run => {
+      const st = run.getTextStyle().copy().setItalic(false).setUnderline(false).build();
+      b.setTextStyle(run.getStartIndex(), run.getEndIndex(), st);
+    });
+    base = b.build();
+  }
+  if (!marks.length) return base;
+
+  const builder = base.copy();
+  const runs = base.getRuns();
+
+  marks.forEach(mk => {
+    runs.forEach(run => {
+      const s = Math.max(mk.s, run.getStartIndex());
+      const e = Math.min(mk.e, run.getEndIndex());
+      if (s >= e) return;
+      const sb = run.getTextStyle().copy();
+      if (cfg.markItalic) sb.setItalic(true);
+      if (cfg.markUnderline) sb.setUnderline(true);
+      if (cfg.markTextColor) sb.setForegroundColor(mk.color);
+      builder.setTextStyle(s, e, sb.build());
+    });
+  });
+  return builder.build();
 }
 
 /***** 工具函数 *****/
@@ -204,25 +284,28 @@ function normChar_(ch) {
   return ch;
 }
 
-function normalize_(s) {
-  let out = '';
+// 去掉空白并统一符号，同时记录每个字符在原文中的位置
+function normalizeWithMap_(s) {
+  let norm = '';
+  const map = [];
   for (let i = 0; i < s.length; i++) {
     const ch = s.charAt(i);
     if (/\s/.test(ch)) continue;
-    out += normChar_(ch);
+    norm += normChar_(ch);
+    map.push(i);
   }
-  return out;
+  return { norm: norm, map: map };
 }
 
-// 从 pointer 起向后查找；找不到时用前 20 个字符做兜底匹配
+// 从 pointer 起向后查找，返回 {pos, len}；整句找不到时用前 20 个字符兜底
 function findFrom_(hay, needle, pointer, maxSkip) {
   const limit = Math.min(hay.length, pointer + maxSkip + needle.length);
   const win = hay.substring(pointer, limit);
   let p = win.indexOf(needle);
-  if (p >= 0) return pointer + p;
+  if (p >= 0) return { pos: pointer + p, len: needle.length };
   if (needle.length > 20) {
     p = win.indexOf(needle.substring(0, 20));
-    if (p >= 0) return pointer + p;
+    if (p >= 0) return { pos: pointer + p, len: 20 };
   }
-  return -1;
+  return null;
 }
