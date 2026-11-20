@@ -5,10 +5,10 @@
   <style>
     body { font-family: Arial, sans-serif; font-size: 13px; padding: 12px; }
     label { display: block; margin-top: 10px; font-weight: bold; }
+    label.chk { font-weight: normal; margin-top: 6px; }
     input[type=text], input[type=number], select {
       width: 100%; box-sizing: border-box; padding: 6px; margin-top: 4px;
     }
-    .row { margin-top: 10px; }
     button { margin-top: 14px; width: 100%; padding: 9px; background: #1a73e8;
              color: #fff; border: 0; border-radius: 4px; cursor: pointer; font-size: 14px; }
     button:disabled { background: #9bbcf0; cursor: default; }
@@ -51,11 +51,16 @@
   <label>起始行</label>
   <input type="number" id="startRow" min="1">
 
-  <div class="row">
-    <label style="font-weight:normal">
-      <input type="checkbox" id="clearUnmatched"> 文档中无颜色的单元格清除底色
-    </label>
-  </div>
+  <hr>
+
+  <label>标记方式（可多选）</label>
+  <label class="chk"><input type="checkbox" id="cellBg"> 整格填充高亮底色</label>
+  <label class="chk" style="margin-left:18px"><input type="checkbox" id="clearUnmatched"> 无颜色的单元格清除底色</label>
+  <label class="chk"><input type="checkbox" id="markItalic"> 高亮的那几个词改成斜体</label>
+  <label class="chk"><input type="checkbox" id="markUnderline"> 高亮的那几个词加下划线</label>
+  <label class="chk"><input type="checkbox" id="markTextColor"> 高亮的那几个词改成对应的文字颜色</label>
+  <label class="chk"><input type="checkbox" id="clearOldMarks"> 同步前清除旧的斜体/下划线</label>
+  <div class="hint">“清除旧标记”会去掉匹配到的单元格里所有斜体和下划线，包括你自己加的。</div>
 
   <button id="btn" onclick="run()">保存并同步</button>
   <div id="result"></div>
@@ -82,7 +87,8 @@
       document.getElementById('startRow').value = s.startRow;
       document.getElementById('mode').value = s.mode;
       document.getElementById('ignoreColors').value = s.ignoreColors;
-      document.getElementById('clearUnmatched').checked = !!s.clearUnmatched;
+      ['cellBg', 'clearUnmatched', 'markItalic', 'markUnderline', 'markTextColor', 'clearOldMarks']
+        .forEach(id => { document.getElementById(id).checked = !!s[id]; });
     }
 
     function detect() {
@@ -94,21 +100,11 @@
         .withSuccessHandler(list => {
           btn.disabled = false;
           if (!list.length) { box.textContent = '英文列里没有检测到颜色。'; return; }
-          box.textContent = '';
-          list.forEach(o => {
-            const row = document.createElement('div');
-            const swatch = document.createElement('span');
-            swatch.style.cssText = 'display:inline-block;width:14px;height:14px;border:1px solid #999;vertical-align:middle';
-            // Google Docs normally returns a hex color. Validate it before using it as CSS.
-            if (/^#[0-9a-f]{6}$/i.test(o.color)) swatch.style.backgroundColor = o.color;
-            row.appendChild(swatch);
-            row.appendChild(document.createTextNode(' ' + o.color + '（' + o.count + ' 字）'));
-            box.appendChild(row);
-          });
-          const hint = document.createElement('div');
-          hint.className = 'hint';
-          hint.textContent = '不想同步的颜色（如灰色）请复制到“忽略的颜色”。';
-          box.appendChild(hint);
+          box.innerHTML = list.map(o =>
+            '<div><span style="display:inline-block;width:14px;height:14px;background:' + o.color +
+            ';border:1px solid #999;vertical-align:middle"></span> ' +
+            o.color + '（' + o.count + ' 字）</div>'
+          ).join('') + '<div class="hint">不想同步的颜色（如灰色）请复制到“忽略的颜色”。</div>';
         })
         .withFailureHandler(err => { btn.disabled = false; box.textContent = '出错：' + err.message; })
         .detectColors(
@@ -129,7 +125,12 @@
         startRow: document.getElementById('startRow').value,
         mode: document.getElementById('mode').value,
         ignoreColors: document.getElementById('ignoreColors').value,
+        cellBg: document.getElementById('cellBg').checked,
         clearUnmatched: document.getElementById('clearUnmatched').checked,
+        markItalic: document.getElementById('markItalic').checked,
+        markUnderline: document.getElementById('markUnderline').checked,
+        markTextColor: document.getElementById('markTextColor').checked,
+        clearOldMarks: document.getElementById('clearOldMarks').checked,
         maxSkip: 5000
       };
       btn.disabled = true;
