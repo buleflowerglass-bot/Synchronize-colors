@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px;
+           margin: 0; padding: 24px 16px; background: #f4f5f7; color: #222; }
+    .card { max-width: 560px; margin: 0 auto; background: #fff; border-radius: 10px;
+            padding: 22px 24px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    h2 { font-size: 14px; margin: 22px 0 0; padding-top: 14px; border-top: 1px solid #e5e5e5; color: #555; }
+    label { display: block; margin-top: 12px; font-weight: bold; }
+    label.chk { font-weight: normal; margin-top: 8px; }
+    input[type=text], input[type=number], select {
+      width: 100%; padding: 8px; margin-top: 4px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;
+    }
+    .inline { display: flex; gap: 8px; align-items: flex-end; }
+    .inline > div { flex: 1; }
+    button { padding: 9px 14px; background: #1a73e8; color: #fff; border: 0; border-radius: 4px;
+             cursor: pointer; font-size: 14px; }
+    button.gray { background: #5f6368; }
+    button.full { width: 100%; margin-top: 18px; padding: 11px; font-size: 15px; }
+    button:disabled { opacity: .55; cursor: default; }
+    .hint { color: #777; font-size: 12px; margin-top: 4px; }
+    #result { margin-top: 14px; white-space: pre-wrap; background: #f1f8e9; border-radius: 6px;
+              padding: 10px 12px; display: none; line-height: 1.6; }
+    #result.err { background: #fdecea; }
+    #colorList div.item { margin-top: 4px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>文档颜色同步</h1>
+  <div class="hint">把谷歌文档里的高亮，同步到谷歌表格的英文列。</div>
+
+  <h2>① 谷歌文档</h2>
+  <label>文档链接或 ID</label>
+  <input type="text" id="docUrl" placeholder="https://docs.google.com/document/d/...">
+
+  <div class="inline">
+    <div>
+      <label>英文所在列（文档表格中）</label>
+      <input type="number" id="docColumn" min="1" placeholder="2">
+    </div>
+    <div>
+      <label>颜色类型</label>
+      <select id="mode">
+        <option value="background">高亮颜色（背景）</option>
+        <option value="text">文字颜色</option>
+      </select>
+    </div>
+  </div>
+  <div class="hint">中文 | 英文 | 塞语 → 英文列填 2</div>
+
+  <button type="button" class="gray" id="detectBtn" style="margin-top:12px" onclick="detect()">检测英文列里的颜色</button>
+  <div id="colorList" style="margin-top:8px"></div>
+
+  <label>忽略的颜色（可选）</label>
+  <input type="text" id="ignoreColors" placeholder="#cccccc,#d9d9d9">
+  <div class="hint">多个颜色用英文逗号分隔</div>
+
+  <h2>② 谷歌表格</h2>
+  <label>表格链接或 ID</label>
+  <div class="inline">
+    <div><input type="text" id="sheetUrl" placeholder="https://docs.google.com/spreadsheets/d/..."></div>
+    <button type="button" class="gray" id="loadBtn" onclick="loadSheets()">读取标签</button>
+  </div>
+
+  <label>作用工作表（标签）</label>
+  <select id="sheetName"></select>
+  <div class="hint">不选则使用链接里 gid 对应的标签，没有 gid 则用第一个标签</div>
+
+  <div class="inline">
+    <div>
+      <label>作用列（英文列）</label>
+      <input type="text" id="column" maxlength="3" placeholder="例如 E">
+    </div>
+    <div>
+      <label>起始行</label>
+      <input type="number" id="startRow" min="1">
+    </div>
+  </div>
+
+  <h2>③ 标记方式（可多选）</h2>
+  <label class="chk"><input type="checkbox" id="cellBg"> 整格填充高亮底色</label>
+  <label class="chk" style="margin-left:20px"><input type="checkbox" id="clearUnmatched"> 无颜色的单元格清除底色</label>
+  <label class="chk"><input type="checkbox" id="markItalic"> 高亮的那几个词改成斜体</label>
+  <label class="chk"><input type="checkbox" id="markUnderline"> 高亮的那几个词加下划线</label>
+  <label class="chk"><input type="checkbox" id="markTextColor"> 高亮的那几个词改成对应的文字颜色</label>
+  <label class="chk"><input type="checkbox" id="clearOldMarks"> 同步前清除旧的斜体/下划线</label>
+  <div class="hint">“清除旧标记”会去掉匹配到的单元格里所有斜体和下划线，包括你自己加的。</div>
+
+  <button class="full" id="btn" onclick="run()">保存并同步</button>
+  <div id="result"></div>
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const CHECKS = ['cellBg', 'clearUnmatched', 'markItalic', 'markUnderline', 'markTextColor', 'clearOldMarks'];
+
+  google.script.run.withSuccessHandler(init).getInitData();
+
+  function fillSheets(names, selected) {
+    const sel = $('sheetName');
+    sel.replaceChildren();
+    const first = document.createElement('option');
+    first.value = ''; first.textContent = '（按链接 gid / 第一个标签）';
+    sel.appendChild(first);
+    names.forEach(n => {
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n;
+      sel.appendChild(o);
+    });
+    sel.value = names.indexOf(selected) >= 0 ? selected : '';
+  }
+
+  function init(data) {
+    const s = data.settings;
+    $('docUrl').value = s.docUrl;
+    $('docColumn').value = s.docColumn;
+    $('mode').value = s.mode;
+    $('ignoreColors').value = s.ignoreColors;
+    $('sheetUrl').value = s.sheetUrl;
+    $('column').value = s.column;
+    $('startRow').value = s.startRow;
+    CHECKS.forEach(id => { $(id).checked = !!s[id]; });
+    fillSheets(data.sheets, s.sheetName);
+  }
+
+  function loadSheets() {
+    const btn = $('loadBtn');
+    const url = $('sheetUrl').value.trim();
+    if (!url) { show('请先填写表格链接。', true); return; }
+    btn.disabled = true;
+    google.script.run
+      .withSuccessHandler(names => { fillSheets(names, $('sheetName').value); btn.disabled = false; show('已读取 ' + names.length + ' 个标签。'); })
+      .withFailureHandler(err => { btn.disabled = false; show('读取失败：' + err.message, true); })
+      .getSheetNames(url);
+  }
+
+  function detect() {
+    const box = $('colorList');
+    const btn = $('detectBtn');
+    box.textContent = '检测中…';
+    btn.disabled = true;
+    google.script.run
+      .withSuccessHandler(list => {
+        btn.disabled = false;
+        if (!list.length) { box.textContent = '英文列里没有检测到颜色。'; return; }
+        renderColors(box, list);
+      })
+      .withFailureHandler(err => { btn.disabled = false; box.textContent = '出错：' + err.message; })
+      .detectColors($('docUrl').value.trim(), $('docColumn').value, $('mode').value);
+  }
+
+  function renderColors(box, list) {
+    box.replaceChildren();
+    list.forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'item';
+      const swatch = document.createElement('span');
+      const color = /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#ffffff';
+      swatch.style.cssText = 'display:inline-block;width:14px;height:14px;border:1px solid #999;vertical-align:middle';
+      swatch.style.backgroundColor = color;
+      row.append(swatch, document.createTextNode(' ' + color + '（' + Number(item.count) + ' 字）'));
+      box.appendChild(row);
+    });
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = '不想同步的颜色（如灰色）请复制到“忽略的颜色”。';
+    box.appendChild(hint);
+  }
+
+  function show(msg, isErr) {
+    const out = $('result');
+    out.style.display = 'block';
+    out.className = isErr ? 'err' : '';
+    out.textContent = msg;
+  }
+
+  function run() {
+    const btn = $('btn');
+    const s = {
+      docUrl: $('docUrl').value.trim(),
+      docColumn: $('docColumn').value,
+      sheetUrl: $('sheetUrl').value.trim(),
+      sheetName: $('sheetName').value,
+      column: $('column').value.trim(),
+      startRow: $('startRow').value,
+      mode: $('mode').value,
+      ignoreColors: $('ignoreColors').value,
+      maxSkip: 5000
+    };
+    CHECKS.forEach(id => { s[id] = $(id).checked; });
+
+    btn.disabled = true;
+    show('处理中，请稍候…');
+    google.script.run
+      .withSuccessHandler(msg => { show(msg); btn.disabled = false; })
+      .withFailureHandler(err => { show('出错：' + err.message, true); btn.disabled = false; })
+      .saveAndSync(s);
+  }
+</script>
+</body>
+</html>
